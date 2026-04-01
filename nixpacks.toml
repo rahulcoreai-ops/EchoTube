@@ -1,8 +1,12 @@
 [phases.setup]
-nixPkgs = ["nodePackages.npm", "yt-dlp", "ffmpeg"]
+# yt-dlp from nixpkgs includes Python + ffmpeg dependencies
+nixPkgs = ["nodePackages.npm", "yt-dlp", "ffmpeg", "python3"]
 
 [phases.build]
-cmds = ["YOUTUBE_DL_SKIP_PYTHON_CHECK=1 YOUTUBE_DL_SKIP_DOWNLOAD=true npm ci --legacy-peer-deps", "npm run build"]
+cmds = [
+  "YOUTUBE_DL_SKIP_PYTHON_CHECK=1 YOUTUBE_DL_SKIP_DOWNLOAD=true npm ci --legacy-peer-deps",
+  "npm run build"
+]
 
 [start]
 cmd = "NODE_ENV=production npx tsx server.ts"

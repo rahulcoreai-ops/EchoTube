@@ -26,6 +26,26 @@ const setupEnvironmentCookies = (): string => {
 };
 const ENV_COOKIE_PATH = setupEnvironmentCookies();
 
+// ─── yt-dlp binary resolver ───────────────────────────────────────────────────
+// Prefer system yt-dlp (more up-to-date on Render/Nixpacks) over the bundled one
+const resolveYtDlpBinary = (): string | undefined => {
+  const candidates = [
+    "/usr/local/bin/yt-dlp",   // Dockerfile installs here
+    "/usr/bin/yt-dlp",         // nixpacks / system apt
+    process.env.YTDLP_PATH,    // user override via env var
+  ];
+  for (const p of candidates) {
+    if (p && fs.existsSync(p)) {
+      console.log(`[yt-dlp] Using binary: ${p}`);
+      return p;
+    }
+  }
+  // Fall back to whatever youtube-dl-exec resolves (bundled downloader)
+  console.log("[yt-dlp] No system binary found — using youtube-dl-exec default");
+  return undefined;
+};
+const YTDLP_BINARY = resolveYtDlpBinary();
+
 // ─── yt-dlp options ──────────────────────────────────────────────────────────
 const getDlOpts = () => {
   const opts: Record<string, unknown> = {
@@ -34,14 +54,24 @@ const getDlOpts = () => {
     noCheckCertificates: true,
     preferFreeFormats: true,
     referer: "https://www.youtube.com/",
-    // Impersonate Chrome + use Android client to bypass bot-detection
-    impersonate: "chrome",
-    extractorArgs: "youtube:player_client=android,web",
     noPlaylist: true,
     noPart: true,
     noCacheDir: true,
     bufferSize: "16K",
+    // Use android client — most reliable bypass for bot-detection without curl_cffi
+    // NOTE: "impersonate" removed — it requires curl_cffi which is not installed
+    //       in the Docker/Nixpacks environment and causes yt-dlp to crash.
+    extractorArgs: "youtube:player_client=android,web",
+    // Add a realistic user-agent instead of impersonate
+    addHeader: [
+      "User-Agent:Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+    ],
   };
+
+  // Override binary path if a system yt-dlp was found
+  if (YTDLP_BINARY) {
+    opts.binaryPath = YTDLP_BINARY;
+  }
 
   // Cookie lookup: env-written file > local files
   const cookieCandidates = [
@@ -52,6 +82,7 @@ const getDlOpts = () => {
   for (const p of cookieCandidates) {
     if (p && fs.existsSync(p)) {
       opts.cookies = p;
+      console.log(`[yt-dlp] Using cookies: ${p}`);
       break;
     }
   }
@@ -89,8 +120,8 @@ const getVideoId = (url: string): string | null => {
 // ─── Session rate limiter ────────────────────────────────────────────────────
 interface RateLimitEntry { count: number; resetAt: number }
 const sessionLimits = new Map<string, RateLimitEntry>();
-const RATE_WINDOW = 60_000;   // 1 min
-const RATE_MAX    = 20;       // requests per window
+const RATE_WINDOW = 60_000;
+const RATE_MAX    = 20;
 
 const sessionRateLimiter: express.RequestHandler = (req, res, next) => {
   const key = (req.headers["x-session-id"] as string) || req.ip || "anon";
@@ -108,7 +139,6 @@ const sessionRateLimiter: express.RequestHandler = (req, res, next) => {
   next();
 };
 
-// Cleanup stale rate-limit entries every minute
 setInterval(() => {
   const now = Date.now();
   for (const [k, v] of sessionLimits) {
@@ -131,7 +161,7 @@ async function startServer() {
   app.use(
     cors({
       origin: (origin, cb) => {
-        if (!origin) return cb(null, true); // same-origin / curl / Postman
+        if (!origin) return cb(null, true);
         if (allowedOrigins.length === 0 || allowedOrigins.includes(origin))
           return cb(null, true);
         cb(new Error(`CORS blocked: ${origin}`));
@@ -150,16 +180,9 @@ async function startServer() {
   app.get("/api/info", sessionRateLimiter, async (req, res) => {
     const videoUrl = req.query.url as string;
 
-    if (!videoUrl) {
-      res.status(400).json({ error: "URL is required." });
-      return;
-    }
-    if (!isAllowedUrl(videoUrl)) {
-      res.status(400).json({ error: "Only YouTube URLs are supported." });
-      return;
-    }
+    if (!videoUrl) { res.status(400).json({ error: "URL is required." }); return; }
+    if (!isAllowedUrl(videoUrl)) { res.status(400).json({ error: "Only YouTube URLs are supported." }); return; }
 
-    // Cache hit
     const cached = infoCache.get(videoUrl);
     if (cached && cached.expiry > Date.now()) {
       res.json(cached.data);
@@ -168,7 +191,6 @@ async function startServer() {
 
     const videoId = getVideoId(videoUrl);
 
-    // Try YouTube Data API v3 first (fast, reliable)
     if (YOUTUBE_API_KEY && videoId) {
       try {
         const { data } = await axios.get(
@@ -202,7 +224,6 @@ async function startServer() {
       }
     }
 
-    // Fallback: yt-dlp scrape with 2 retries
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         const info = await youtubedl(videoUrl, getDlOpts()) as Record<string, unknown>;
@@ -239,16 +260,26 @@ async function startServer() {
     // ── Format string ────────────────────────────────────────────────────────
     let formatStr: string;
     if (!isVideo) {
-      if (quality === "low")    formatStr = "worstaudio[ext=m4a]/worstaudio/worst";
-      else if (quality === "medium") formatStr = "bestaudio[ext=m4a][abr<=192]/bestaudio[abr<=192]/bestaudio[ext=m4a]/bestaudio";
-      else                      formatStr = "bestaudio[ext=m4a]/bestaudio/best";
+      // FIX: "highestaudio" is NOT a valid yt-dlp format selector — it was
+      // treated as the else-branch before, which was correct, but we now make
+      // the logic explicit and also add an opus fallback for broader compat.
+      if (quality === "low")
+        formatStr = "worstaudio[ext=m4a]/worstaudio[ext=webm]/worstaudio/worst";
+      else if (quality === "medium")
+        formatStr = "bestaudio[ext=m4a][abr<=192]/bestaudio[abr<=192]/bestaudio[ext=m4a]/bestaudio";
+      else
+        // highestaudio / default: best audio, prefer m4a, fallback to any
+        formatStr = "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best";
     } else {
-      if (quality === "1080p")  formatStr = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[ext=mp4]/best";
-      else if (quality === "360p") formatStr = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[ext=mp4][height<=360]/best";
-      else                      formatStr = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[ext=mp4]/best";
+      if (quality === "1080p")
+        formatStr = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[ext=mp4]/best";
+      else if (quality === "360p")
+        formatStr = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[ext=mp4][height<=360]/best";
+      else
+        formatStr = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[ext=mp4]/best";
     }
 
-    // ── Get title for filename (use cache if available) ───────────────────
+    // ── Get title for filename ────────────────────────────────────────────
     let title = "download";
     const cached = infoCache.get(videoUrl);
     if (cached) {
@@ -257,7 +288,14 @@ async function startServer() {
       try {
         const info = await youtubedl(videoUrl, getDlOpts()) as Record<string, unknown>;
         title = (info.title as string) || title;
-      } catch { /* use default */ }
+        // Cache it while we have it
+        infoCache.set(videoUrl, {
+          data: { title: info.title, thumbnail: info.thumbnail, duration: String(info.duration), author: info.uploader || info.channel, url: videoUrl },
+          expiry: Date.now() + CACHE_TTL,
+        });
+      } catch (e) {
+        console.warn("Could not fetch title before download:", (e as Error).message);
+      }
     }
 
     const safeTitle = title
@@ -265,49 +303,112 @@ async function startServer() {
       .replace(/[/\\?%*:|"<>]/g, "_")
       .trim() || "download";
 
-    const ext      = isVideo ? "mp4"      : "m4a";
+    const ext      = isVideo ? "mp4"       : "m4a";
     const mimeType = isVideo ? "video/mp4" : "audio/mp4";
 
-    res.setHeader("Content-Disposition", `attachment; filename="${safeTitle}.${ext}"`);
-    res.setHeader("Content-Type", mimeType);
-    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
-
-    // ── Stream yt-dlp output directly to response ─────────────────────────
+    // ── Build download options ────────────────────────────────────────────
     const dlOpts = getDlOpts();
-    delete dlOpts.dumpJson;
+    delete dlOpts.dumpJson; // Must NOT dump JSON during actual download
 
-    const subprocess = youtubedl.exec(videoUrl, {
+    const spawnOpts = {
       ...dlOpts,
       format: formatStr,
-      output: "-",
+      output: "-",            // stream to stdout
       concurrentFragments: 4,
-    } as any);
+    } as any;
 
-    // Prevent UnhandledPromiseRejection if yt-dlp exits with non-zero
-    subprocess.catch((err: any) => {
-      console.warn("yt-dlp download process exited with error:", err.message);
-    });
+    console.log(`[download] Starting: ${videoUrl} | format: ${formatStr}`);
 
-    subprocess.stdout?.pipe(res);
+    // ── FIX: Use a two-phase approach ─────────────────────────────────────
+    // Phase 1: Spawn the process and wait briefly to detect immediate failures
+    // before committing headers. This prevents the "headers sent but 500"
+    // race condition that was causing the download to fail silently.
+    let headersSentFlag = false;
+
+    const subprocess = youtubedl.exec(videoUrl, spawnOpts);
+
+    // Capture early stderr to detect errors before piping
+    const stderrChunks: string[] = [];
+    let processExitedEarly = false;
+    let exitCode: number | null = null;
 
     subprocess.stderr?.on("data", (data: Buffer) => {
       const msg = data.toString();
-      if (msg.includes("ERROR")) console.error("yt-dlp:", msg.trim());
-    });
-
-    subprocess.on("error", (err: Error) => {
-      console.error("Subprocess error:", err.message);
-      if (!res.headersSent) res.status(500).send("Stream error.");
-    });
-
-    subprocess.on("close", (code: number) => {
-      if (code !== 0 && !res.headersSent) {
-        res.status(500).json({ error: "Download failed. Video may be unavailable." });
+      stderrChunks.push(msg);
+      if (msg.includes("ERROR") || msg.includes("error")) {
+        console.error("[yt-dlp stderr]", msg.trim());
       }
     });
 
-    // If client disconnects, kill the subprocess
-    req.on("close", () => subprocess.kill?.());
+    // Prevent unhandled promise rejection
+    subprocess.catch((err: any) => {
+      console.warn("[yt-dlp] Process promise rejected:", err?.message ?? err);
+    });
+
+    // Set a short detection window: if yt-dlp errors out in the first
+    // 2 seconds we can still send a proper JSON 500 back.
+    const EARLY_DETECT_MS = 2000;
+    let earlyDetected = false;
+
+    const earlyFailTimer = setTimeout(() => {
+      earlyDetected = true;
+      // yt-dlp hasn't died yet → safe to commit headers and start piping
+      if (!processExitedEarly) {
+        res.setHeader("Content-Disposition", `attachment; filename="${safeTitle}.${ext}"`);
+        res.setHeader("Content-Type", mimeType);
+        res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+        headersSentFlag = true;
+        subprocess.stdout?.pipe(res);
+
+        subprocess.on("close", (code: number) => {
+          exitCode = code;
+          if (code !== 0) {
+            console.error(`[yt-dlp] Exited with code ${code} after streaming started`);
+            // Can no longer send a clean error — stream is already open
+            // Best we can do is destroy the response to signal failure
+            if (!res.writableEnded) res.destroy();
+          } else {
+            console.log("[yt-dlp] Download complete");
+            if (!res.writableEnded) res.end();
+          }
+        });
+      }
+    }, EARLY_DETECT_MS);
+
+    // Watch for early process exit (within the detection window)
+    subprocess.on("close", (code: number) => {
+      exitCode = code;
+      if (!earlyDetected) {
+        // Closed before our detection window elapsed → early failure
+        clearTimeout(earlyFailTimer);
+        processExitedEarly = true;
+        const errSummary = stderrChunks.join("").slice(0, 500);
+        console.error(`[yt-dlp] Early exit (code ${code}):`, errSummary);
+
+        if (!headersSentFlag && !res.headersSent) {
+          const userMsg = errSummary.includes("unavailable") || errSummary.includes("private")
+            ? "This video is unavailable or private."
+            : errSummary.includes("Sign in") || errSummary.includes("age")
+            ? "This video requires sign-in or is age-restricted."
+            : "Download failed. Please try again or use a different video.";
+          res.status(500).json({ error: userMsg, detail: errSummary });
+        }
+      }
+    });
+
+    subprocess.on("error", (err: Error) => {
+      clearTimeout(earlyFailTimer);
+      console.error("[yt-dlp] Subprocess spawn error:", err.message);
+      if (!headersSentFlag && !res.headersSent) {
+        res.status(500).json({ error: "Failed to start download process.", detail: err.message });
+      }
+    });
+
+    // If client disconnects, kill the subprocess to free resources
+    req.on("close", () => {
+      clearTimeout(earlyFailTimer);
+      subprocess.kill?.();
+    });
   });
 
   // ── Static / Vite middleware ───────────────────────────────────────────────

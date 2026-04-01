@@ -95,10 +95,20 @@ export default function App() {
     const savedTheme = localStorage.getItem('echo_theme') as Theme | null;
     setTheme(savedTheme ?? (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
 
-    // Ping backend health
-    fetch(apiUrl('/api/health'), { signal: AbortSignal.timeout(5000) })
-      .then(r => setBackendOnline(r.ok))
-      .catch(() => setBackendOnline(false));
+    // Ping backend health — retry up to 3x to handle Render cold-start spin-up
+    const checkHealth = async (attempt = 1) => {
+      try {
+        const r = await fetch(apiUrl('/api/health'), { signal: AbortSignal.timeout(8000) });
+        setBackendOnline(r.ok);
+      } catch {
+        if (attempt < 3) {
+          setTimeout(() => checkHealth(attempt + 1), 4000 * attempt);
+        } else {
+          setBackendOnline(false);
+        }
+      }
+    };
+    checkHealth();
   }, []);
 
   useEffect(() => {
@@ -177,6 +187,12 @@ export default function App() {
   const executeDownload = async () => {
     if (!videoInfo || dlState === 'downloading') return;
 
+    // Guard: surface a clear message if backend is known offline
+    if (backendOnline === false) {
+      setError('The EchoTube backend is currently offline. Please try again in a few minutes.');
+      return;
+    }
+
     const qualityParam = mediaType === 'audio' ? audioQuality : videoQuality;
     const endpoint = apiUrl(
       `/api/download?url=${encodeURIComponent(videoInfo.url)}&quality=${qualityParam}&type=${mediaType}`
@@ -204,8 +220,16 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const msg = await response.text().catch(() => 'Download failed.');
-        throw new Error(msg || `Server error ${response.status}`);
+        // Server sends JSON { error, detail } — parse it cleanly
+        const raw = await response.text().catch(() => '');
+        let msg = `Server error ${response.status}`;
+        try {
+          const parsed = JSON.parse(raw);
+          msg = parsed.error || parsed.message || msg;
+        } catch {
+          msg = raw || msg;
+        }
+        throw new Error(msg);
       }
 
       // Extract filename from Content-Disposition
