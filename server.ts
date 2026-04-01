@@ -33,10 +33,20 @@ const getDlOpts = () => {
   };
 
   // Support for cookies (Essential for server environments)
-  // Check for cookies.txt file or use environment variable content
-  const COOKIES_FILE = path.join(process.cwd(), 'cookies.txt');
-  if (fs.existsSync(COOKIES_FILE)) {
-    opts.cookies = COOKIES_FILE;
+  // Check for various cookie filenames or use environment variable content
+  const COOKIE_NAMES = ['cookies.txt', 'www.youtube.com_cookies.txt'];
+  let cookiePath = '';
+  
+  for (const name of COOKIE_NAMES) {
+    const fullPath = path.join(process.cwd(), name);
+    if (fs.existsSync(fullPath)) {
+      cookiePath = fullPath;
+      break;
+    }
+  }
+
+  if (cookiePath) {
+    opts.cookies = cookiePath;
   } else if (process.env.YOUTUBE_COOKIES) {
     // Write cookies from env to a temporary file since yt-dlp expects a path
     const tempCookies = path.join(process.cwd(), 'temp_cookies.txt');
