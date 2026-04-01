@@ -98,6 +98,15 @@ export default function App() {
 
   const toggleTheme = () => setTheme(theme === 'light' ? 'dark' : 'light');
   const getSessionId = () => localStorage.getItem('echo_session_id') || 'anonymous';
+  
+  // Helper to construct API URLs for production decoupling
+  const getApiUrl = (path: string) => {
+    const baseUrl = import.meta.env.VITE_API_BASE_URL || '';
+    // Ensure no double slashes if baseUrl ends with /
+    const cleanBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+    const cleanPath = path.startsWith('/') ? path : `/${path}`;
+    return `${cleanBase}${cleanPath}`;
+  };
 
   const saveToRecent = (info: VideoInfo) => {
     const newRecent = [
@@ -131,7 +140,8 @@ export default function App() {
     setDownloadState('idle');
 
     try {
-      const response = await fetch(`/api/info?url=${encodeURIComponent(finalUrl)}`, {
+      const apiUrl = getApiUrl(`/api/info?url=${encodeURIComponent(finalUrl)}`);
+      const response = await fetch(apiUrl, {
         headers: {
           'x-session-id': getSessionId()
         }
@@ -177,7 +187,8 @@ export default function App() {
     }, 400);
     
     try {
-      const response = await fetch(downloadUrl, {
+      const fullDownloadUrl = getApiUrl(downloadUrl);
+      const response = await fetch(fullDownloadUrl, {
         headers: { 'x-session-id': getSessionId() }
       });
       
