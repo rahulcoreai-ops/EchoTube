@@ -16,10 +16,10 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     gcc libssl-dev libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp from PyPI (includes curl_cffi support via extras)
-# This is more reliable than the raw binary download for impersonate support
+# Install yt-dlp from PyPI (latest version for newest YouTube fixes)
 RUN pip3 install --no-cache-dir --break-system-packages \
     "yt-dlp[default]" \
+    && yt-dlp --update-to nightly || true \
     && yt-dlp --version
 
 WORKDIR /app
@@ -30,6 +30,7 @@ RUN YOUTUBE_DL_SKIP_PYTHON_CHECK=1 YOUTUBE_DL_SKIP_DOWNLOAD=true npm ci --omit=d
 COPY --from=builder /app/dist ./dist
 COPY server.ts ./
 COPY tsconfig.json ./
+COPY cookies.txt ./
 
 # Runtime deps for tsx
 RUN npm install tsx --no-save --legacy-peer-deps

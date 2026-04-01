@@ -61,10 +61,10 @@ const getDlOpts = () => {
     // Use android client — most reliable bypass for bot-detection without curl_cffi
     // NOTE: "impersonate" removed — it requires curl_cffi which is not installed
     //       in the Docker/Nixpacks environment and causes yt-dlp to crash.
-    extractorArgs: "youtube:player_client=android,web",
+    extractorArgs: "youtube:player_client=web_creator,mweb",
     // Add a realistic user-agent instead of impersonate
     addHeader: [
-      '"User-Agent:Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"',
+      "User-Agent:Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
     ],
   };
 
@@ -253,6 +253,7 @@ async function startServer() {
 
   // ── /api/download ─────────────────────────────────────────────────────────
   app.get("/api/download", sessionRateLimiter, async (req, res) => {
+   try {
     const videoUrl = req.query.url     as string;
     const quality  = req.query.quality as string || "highestaudio";
     const type     = req.query.type    as string || "audio";
@@ -319,7 +320,8 @@ async function startServer() {
       ...dlOpts,
       format: formatStr,
       output: "-",            // stream to stdout
-      concurrentFragments: 4,
+      // NOTE: Do NOT use concurrentFragments with stdout streaming —
+      // concurrent downloads produce interleaved/corrupt output when piped.
     } as any;
 
     console.log(`[download] Starting: ${videoUrl} | format: ${formatStr}`);
@@ -414,6 +416,12 @@ async function startServer() {
       clearTimeout(earlyFailTimer);
       subprocess.kill?.();
     });
+   } catch (err) {
+     console.error("[download] Unhandled error in download handler:", (err as Error).message);
+     if (!res.headersSent) {
+       res.status(500).json({ error: "An unexpected server error occurred. Please try again." });
+     }
+   }
   });
 
   // ── Static / Vite middleware ───────────────────────────────────────────────
@@ -433,5 +441,10 @@ async function startServer() {
     console.log(`🚀 EchoTube running on port ${PORT}`);
   });
 }
+
+// Prevent server crash on unhandled promise rejections
+process.on("unhandledRejection", (reason) => {
+  console.error("[FATAL] Unhandled rejection:", reason);
+});
 
 startServer().catch(console.error);
