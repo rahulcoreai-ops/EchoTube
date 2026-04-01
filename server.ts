@@ -11,9 +11,21 @@ dotenv.config();
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
 
-// Simple in-memory cache to reduce requests to YouTube
-const infoCache = new Map<string, { data: any, expiry: number }>();
-const CACHE_DURATION = 1000 * 60 * 60; // 1 hour
+// Pre-setup for environment cookies to avoid sync writes on every request
+const setupEnvironmentCookies = () => {
+  if (process.env.YOUTUBE_COOKIES) {
+    const tempCookies = path.join(process.cwd(), 'temp_cookies.txt');
+    try {
+      fs.writeFileSync(tempCookies, process.env.YOUTUBE_COOKIES);
+      return tempCookies;
+    } catch (e) {
+      console.error("Failed to write env cookies:", e);
+    }
+  }
+  return '';
+};
+
+const ENV_COOKIE_PATH = setupEnvironmentCookies();
 
 // Build universal options for yt-dlp to bypass bot detection
 const getDlOpts = () => {
@@ -23,19 +35,13 @@ const getDlOpts = () => {
     noCheckCertificates: true,
     preferFreeFormats: true,
     referer: 'https://www.youtube.com/',
-    // Improved headers to seem more human-like
-    addHeader: [
-      'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-      'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-      'Accept-Language: en-US,en;q=0.9',
-      'Sec-Fetch-Mode: navigate'
-    ]
+    // Standard User-Agent to help with bypass
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
   };
 
   // Support for cookies (Essential for server environments)
-  // Check for various cookie filenames or use environment variable content
   const COOKIE_NAMES = ['cookies.txt', 'www.youtube.com_cookies.txt'];
-  let cookiePath = '';
+  let cookiePath = ENV_COOKIE_PATH;
   
   for (const name of COOKIE_NAMES) {
     const fullPath = path.join(process.cwd(), name);
@@ -47,11 +53,6 @@ const getDlOpts = () => {
 
   if (cookiePath) {
     opts.cookies = cookiePath;
-  } else if (process.env.YOUTUBE_COOKIES) {
-    // Write cookies from env to a temporary file since yt-dlp expects a path
-    const tempCookies = path.join(process.cwd(), 'temp_cookies.txt');
-    fs.writeFileSync(tempCookies, process.env.YOUTUBE_COOKIES);
-    opts.cookies = tempCookies;
   }
 
   return opts;
@@ -271,8 +272,10 @@ async function startServer() {
         }
       });
 
+      let stderrOutput = "";
       subprocess.stderr.on("data", (data: Buffer) => {
         const msg = data.toString();
+        stderrOutput += msg;
         // yt-dlp prints progress to stderr - only log actual errors
         if (msg.includes('ERROR')) {
           console.error("yt-dlp error:", msg);
@@ -282,14 +285,17 @@ async function startServer() {
       subprocess.on("error", (err) => {
         console.error("Subprocess error:", err);
         if (!res.headersSent) {
-          res.status(500).send("Failed to start download process");
+          res.status(500).send(`Process error: ${err.message}`);
         }
       });
 
       subprocess.on("close", (code) => {
         if (code !== 0 && !res.headersSent) {
-          console.error(`yt-dlp exited with code ${code}`);
-          res.status(500).send("Download process failed");
+          console.error(`yt-dlp exited with code ${code}. Error: ${stderrOutput}`);
+          res.status(500).json({ 
+            error: "Download process failed", 
+            details: stderrOutput.split('\n').filter(l => l.includes('ERROR')).join(' ') || "No error message provided"
+          });
         }
       });
 
