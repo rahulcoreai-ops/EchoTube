@@ -162,8 +162,13 @@ async function startServer() {
     cors({
       origin: (origin, cb) => {
         if (!origin) return cb(null, true);
-        if (allowedOrigins.length === 0 || allowedOrigins.includes(origin))
+        if (
+          allowedOrigins.length === 0 || 
+          allowedOrigins.includes(origin) ||
+          origin.endsWith(".vercel.app")
+        ) {
           return cb(null, true);
+        }
         cb(new Error(`CORS blocked: ${origin}`));
       },
       credentials: true,
