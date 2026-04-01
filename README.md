@@ -1,87 +1,97 @@
-# 🎵 EchoTube — Premium Media Extractor
+# 🎵 EchoTube v2 — Premium Media Extractor
 
 <div align="center">
-  <img src="public/logo.png" width="120; height="120" alt="EchoTube Logo" />
   <p><i>Immersive. High-Fidelity. Professional.</i></p>
-  
-  [![License: MIT](https://img.shields.io/badge/License-MIT-cyan.svg)](https://opensource.org/licenses/MIT)
-  [![Stack: React+Node](https://img.shields.io/badge/Stack-React%20%2B%20Node-blue.svg)](https://reactjs.org/)
-  [![UI: Premium 3D](https://img.shields.io/badge/UI-Immersive%203D-purple.svg)](https://threejs.org/)
 </div>
 
 ---
 
 ## ✨ Overview
 
-**EchoTube** is a sophisticated, high-performance web application designed for extracting high-fidelity audio and video from YouTube. Built with a focus on aesthetics and user experience, it features a stunning **Three.js 3D background**, real-time **streaming progress tracking**, and a seamless **OLED-optimized dark mode**.
-
-No ads, no bloat—just pure media extraction.
+EchoTube is a full-stack YouTube audio & video extractor. The **frontend** is a React SPA deployed on **Vercel**. The **backend** is a Node.js/Express API deployed on **Render**, using `yt-dlp` + `ffmpeg` to stream media directly to the user.
 
 ---
 
-## 🚀 Key Features
-
-- **💎 Lossless Audio:** Extract crystal-clear M4A/MP3 directly from source servers.
-- **🎬 HD Video:** Download video tracks up to 1080p (fallback to 720p).
-- **🌊 Immersive UI:** Dynamic 3D "Dotted Surface" background that adapts to your system theme.
-- **⏱️ Real-time Progress:** Track your conversion and download percentage with a sleek ring loader.
-- **🌗 OLED optimized:** Pure black (#000000) dark mode for professional contrast.
-- **🧼 Automatic Cleanup:** Session-aware page auto-refresh ensures a fresh state for every download.
-
----
-
-## 🛠️ Technology Stack
+## 🛠️ Tech Stack
 
 | Layer | Technologies |
 | :--- | :--- |
-| **Frontend** | React 19, TypeScript, Tailwind CSS, Framer Motion |
-| **3D Rendering** | Three.js (Dotted Surface Engine) |
-| **Backend** | Node.js, Express, Subprocess Streaming |
-| **Extraction** | `youtube-dl-exec` / `yt-dlp` |
-| **Icons** | Lucide React |
+| **Frontend** | React 19, TypeScript, Tailwind CSS v4, Framer Motion, Three.js |
+| **Backend** | Node.js 20, Express, `youtube-dl-exec` / `yt-dlp`, FFmpeg |
+| **Build** | Vite 6, PWA Plugin |
+| **Deployment** | Vercel (frontend) + Render (backend) |
 
 ---
 
-## 📦 Getting Started
+## 🚀 Quick Start (Local)
 
-### Prerequisites
-- [Node.js](https://nodejs.org/) (v18+)
-- [FFmpeg](https://ffmpeg.org/) (Recommended for video/audio merging)
+```bash
+# 1. Clone & install
+git clone https://github.com/your-repo/EchoTube.git
+cd EchoTube
+npm install
 
-### Installation
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/Mr-avijit/EchoTube.git
-   cd EchoTube
-   ```
+# 2. Create your .env
+cp .env.example .env
+# Edit .env — leave VITE_API_BASE_URL empty for local (it'll use relative URLs)
 
-2. **Install dependencies:**
-   ```bash
-   npm install
-   ```
+# 3. Run (starts Express + Vite together)
+npm run dev
+# Open http://localhost:3000
+```
 
-3. **Environment Setup:**
-   Create a `.env` file in the root directory:
-   ```env
-   VITE_YOUTUBE_API_KEY=your_google_api_key_here
-   PORT=3000
-   ```
-
-4. **Run Development Server:**
-   ```bash
-   npm run dev
-   ```
-   *The app will be available at `http://localhost:3000` (Backend) and your Vite dev port.*
+**Prerequisites:** Node 18+, FFmpeg installed globally, yt-dlp installed globally.
 
 ---
 
-## ⚖️ Legal & Privacy
+## ☁️ Deployment Guide
 
-EchoTube is provided for **personal, non-commercial archival use only**. Users are responsible for complying with YouTube's Terms of Service and local copyright laws. We collect **zero data**—all session info is stored locally on your device.
+### Step 1 — Deploy Backend to Render
+
+1. Create a new **Web Service** on [render.com](https://render.com)
+2. Connect your GitHub repo
+3. Render will auto-detect `nixpacks.toml` — it will install `yt-dlp` + `ffmpeg`, build the frontend, and start the server
+4. Set these **Environment Variables** on Render:
+
+| Variable | Value |
+|---|---|
+| `FRONTEND_URL` | `https://your-app.vercel.app` ← your Vercel URL |
+| `YOUTUBE_API_KEY` | Your Google API key (optional but recommended) |
+| `YOUTUBE_COOKIES` | Contents of your YouTube cookies.txt (optional) |
+| `NODE_ENV` | `production` |
+
+5. Note your Render URL (e.g. `https://echoutube-api.onrender.com`)
+
+---
+
+### Step 2 — Deploy Frontend to Vercel
+
+1. Import your repo on [vercel.com](https://vercel.com)
+2. Set **Framework Preset** to `Vite`
+3. Set this **Environment Variable** on Vercel:
+
+| Variable | Value |
+|---|---|
+| `VITE_API_BASE_URL` | `https://echoutube-api.onrender.com` ← your Render URL |
+
+4. Deploy — done!
+
+---
+
+## ⚙️ Environment Variables Reference
+
+See `.env.example` for full documentation.
+
+---
+
+## ⚖️ Legal
+
+EchoTube is provided for **personal, non-commercial archival use only**.
+Users are responsible for complying with YouTube's Terms of Service and local copyright laws.
+We collect **zero data** — all session info is stored locally on your device.
 
 ---
 
 <div align="center">
-  <p>Made with ❤️ by <b>Chitra</b> — <b>CM</b></p>
-  <img src="public/logo.png" width="40" alt="CM Badge" />
+  <p>Made with ❤️ by <b>Chitra — CM</b></p>
 </div>

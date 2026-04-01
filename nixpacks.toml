@@ -2,7 +2,7 @@
 nixPkgs = ["nodePackages.npm", "yt-dlp", "ffmpeg"]
 
 [phases.build]
-cmds = ["npm install", "npm run build"]
+cmds = ["npm ci", "npm run build"]
 
 [start]
-cmd = "npm run dev"
+cmd = "NODE_ENV=production npx tsx server.ts"
