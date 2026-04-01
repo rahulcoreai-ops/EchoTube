@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: echotube-backend
+    env: docker
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
+    plan: free # Change this to 'starter' or higher if you need more resources
+    branch: main # Change this if your production branch is different
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: YOUTUBE_API_KEY
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: YOUTUBE_COOKIES
+        sync: false
