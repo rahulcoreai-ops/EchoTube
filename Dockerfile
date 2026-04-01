@@ -10,7 +10,7 @@ RUN npm run build
 FROM node:20-slim AS runtime
 
 # Install system dependencies: ffmpeg + yt-dlp
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     python3 python3-pip ffmpeg curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
