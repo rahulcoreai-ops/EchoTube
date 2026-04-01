@@ -27,7 +27,7 @@ COPY server.ts ./
 COPY tsconfig.json ./
 
 # Runtime deps for tsx (used to run server.ts directly)
-RUN npm install tsx --no-save
+RUN npm install tsx --no-save --legacy-peer-deps
 
 ENV NODE_ENV=production
 EXPOSE 3000
