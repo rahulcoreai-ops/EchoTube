@@ -64,7 +64,7 @@ const getDlOpts = () => {
     extractorArgs: "youtube:player_client=android,web",
     // Add a realistic user-agent instead of impersonate
     addHeader: [
-      "User-Agent:Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+      '"User-Agent:Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"',
     ],
   };
 
