@@ -275,15 +275,20 @@ async function startServer() {
     res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
 
     // ── Stream yt-dlp output directly to response ─────────────────────────
+    const dlOpts = getDlOpts();
+    delete dlOpts.dumpJson;
+
     const subprocess = youtubedl.exec(videoUrl, {
-      ...getDlOpts(),
+      ...dlOpts,
       format: formatStr,
       output: "-",
-      dumpJson: false,
-      // Speed optimisations
       concurrentFragments: 4,
-      noResizeBuffer: true,
     } as any);
+
+    // Prevent UnhandledPromiseRejection if yt-dlp exits with non-zero
+    subprocess.catch((err: any) => {
+      console.warn("yt-dlp download process exited with error:", err.message);
+    });
 
     subprocess.stdout?.pipe(res);
 
