@@ -41,8 +41,6 @@ const getDlOpts = () => {
     noPart: true,
     noCacheDir: true,
     bufferSize: "16K",
-    userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
   };
 
   // Cookie lookup: env-written file > local files
