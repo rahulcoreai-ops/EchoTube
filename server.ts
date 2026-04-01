@@ -39,7 +39,14 @@ const getDlOpts = () => {
     noCheckCertificates: true,
     preferFreeFormats: true,
     referer: 'https://www.youtube.com/',
-    // Standard User-Agent to help with bypass
+    // ADVANCED BYPASS: Impersonate Chrome TLS & Android Player Client
+    // This is the most effective way to bypass "bot detection" on Render/Vercel
+    impersonate: 'chrome',
+    extractorArgs: 'youtube:player-client=android,web;player-skip=web_embedded_player,web',
+    noPlaylist: true,
+    noPart: true,
+    noCacheDir: true,
+    bufferSize: '16K',
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
   };
 
