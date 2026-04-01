@@ -11,6 +11,10 @@ dotenv.config();
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
 
+// Simple in-memory cache to reduce requests to YouTube
+const infoCache = new Map<string, { data: any, expiry: number }>();
+const CACHE_DURATION = 1000 * 60 * 60; // 1 hour
+
 // Pre-setup for environment cookies to avoid sync writes on every request
 const setupEnvironmentCookies = () => {
   if (process.env.YOUTUBE_COOKIES) {
