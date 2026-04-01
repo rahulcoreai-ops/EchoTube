@@ -2,7 +2,7 @@
 nixPkgs = ["nodePackages.npm", "yt-dlp", "ffmpeg"]
 
 [phases.build]
-cmds = ["npm ci --legacy-peer-deps", "npm run build"]
+cmds = ["YOUTUBE_DL_SKIP_PYTHON_CHECK=1 YOUTUBE_DL_SKIP_DOWNLOAD=true npm ci --legacy-peer-deps", "npm run build"]
 
 [start]
 cmd = "NODE_ENV=production npx tsx server.ts"
