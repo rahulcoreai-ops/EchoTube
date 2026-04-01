@@ -5,6 +5,7 @@ import cors from "cors";
 import youtubedl from "youtube-dl-exec";
 import axios from "axios";
 import dotenv from "dotenv";
+import fs from "fs";
 
 dotenv.config();
 
@@ -13,6 +14,38 @@ const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
 // Simple in-memory cache to reduce requests to YouTube
 const infoCache = new Map<string, { data: any, expiry: number }>();
 const CACHE_DURATION = 1000 * 60 * 60; // 1 hour
+
+// Build universal options for yt-dlp to bypass bot detection
+const getDlOpts = () => {
+  const opts: any = {
+    dumpJson: true,
+    noWarnings: true,
+    noCheckCertificates: true,
+    preferFreeFormats: true,
+    referer: 'https://www.youtube.com/',
+    // Improved headers to seem more human-like
+    addHeader: [
+      'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+      'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+      'Accept-Language: en-US,en;q=0.9',
+      'Sec-Fetch-Mode: navigate'
+    ]
+  };
+
+  // Support for cookies (Essential for server environments)
+  // Check for cookies.txt file or use environment variable content
+  const COOKIES_FILE = path.join(process.cwd(), 'cookies.txt');
+  if (fs.existsSync(COOKIES_FILE)) {
+    opts.cookies = COOKIES_FILE;
+  } else if (process.env.YOUTUBE_COOKIES) {
+    // Write cookies from env to a temporary file since yt-dlp expects a path
+    const tempCookies = path.join(process.cwd(), 'temp_cookies.txt');
+    fs.writeFileSync(tempCookies, process.env.YOUTUBE_COOKIES);
+    opts.cookies = tempCookies;
+  }
+
+  return opts;
+};
 
 async function startServer() {
   const app = express();
@@ -128,15 +161,7 @@ async function startServer() {
 
     while (retries > 0) {
       try {
-        const info = await youtubedl(videoUrl, {
-          dumpJson: true,
-          noWarnings: true,
-          callHome: false,
-          noCheckCertificates: true,
-          preferFreeFormats: true,
-          youtubeSkipDashManifest: true,
-          referer: 'https://www.youtube.com/'
-        }) as any;
+        const info = await youtubedl(videoUrl, getDlOpts()) as any;
         
         const responseData = {
           title: info.title,
@@ -182,15 +207,7 @@ async function startServer() {
 
     try {
       // Get info first to set headers
-      const info = await youtubedl(videoUrl, {
-        dumpJson: true,
-        noWarnings: true,
-        callHome: false,
-        noCheckCertificates: true,
-        preferFreeFormats: true,
-        youtubeSkipDashManifest: true,
-        referer: 'https://www.youtube.com/'
-      }) as any;
+      const info = await youtubedl(videoUrl, getDlOpts()) as any;
 
       // Sanitize title for filename
       const title = info.title
@@ -230,14 +247,10 @@ async function startServer() {
       }
       
       const subprocess = youtubedl.exec(videoUrl, {
+        ...getDlOpts(),
         format: formatStr,
         output: '-',
-        noWarnings: true,
-        callHome: false,
-        noCheckCertificates: true,
-        preferFreeFormats: true,
-        youtubeSkipDashManifest: true,
-        referer: 'https://www.youtube.com/'
+        dumpJson: false // Don't dump json for the actual stream
       });
 
       // Handle errors on the subprocess streams

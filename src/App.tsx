@@ -255,7 +255,7 @@ export default function App() {
       <div className="absolute inset-0 bg-gradient-to-t from-white/40 via-transparent to-transparent dark:from-black/60 dark:via-transparent dark:to-transparent pointer-events-none z-[1]" />
 
       {/* Navigation */}
-      <nav className="fixed top-0 w-full glass-card border-b border-slate-200/50 dark:border-neutral-900 z-50 transition-colors duration-300">
+      <nav className="fixed top-0 w-full solid-card border-b border-slate-200/50 dark:border-neutral-900 z-50 transition-colors duration-300">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-20 flex items-center justify-between">
           <div className="flex items-center gap-3 cursor-pointer group" onClick={() => { setVideoInfo(null); setUrl(''); setError(null); setDownloadState('idle'); }}>
             <img src="/logo.png" alt="EchoTube" className="w-10 h-10 rounded-xl shadow-[0_0_20px_rgba(6,182,212,0.3)] group-hover:scale-105 transition-transform duration-300 object-contain" />
@@ -748,7 +748,7 @@ export default function App() {
       </AnimatePresence>
 
       {/* Fixed Footer */}
-      <footer className="fixed bottom-0 left-0 right-0 border-t border-slate-200 dark:border-neutral-900 z-40 glass-card dark:bg-black/80">
+      <footer className="fixed bottom-0 left-0 right-0 border-t border-slate-200 dark:border-neutral-900 z-40 solid-card">
         <div className="max-w-7xl mx-auto px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-2 opacity-70 dark:opacity-50">
             <img src="/logo.png" alt="EchoTube" className="w-5 h-5 rounded object-contain" />
