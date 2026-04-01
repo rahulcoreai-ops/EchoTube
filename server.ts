@@ -9,16 +9,12 @@ import fs from "fs";
 
 dotenv.config();
 
-const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || "";
 
-// Simple in-memory cache to reduce requests to YouTube
-const infoCache = new Map<string, { data: any, expiry: number }>();
-const CACHE_DURATION = 1000 * 60 * 60; // 1 hour
-
-// Pre-setup for environment cookies to avoid sync writes on every request
-const setupEnvironmentCookies = () => {
+// ─── Cookie setup ────────────────────────────────────────────────────────────
+const setupEnvironmentCookies = (): string => {
   if (process.env.YOUTUBE_COOKIES) {
-    const tempCookies = path.join(process.cwd(), 'temp_cookies.txt');
+    const tempCookies = path.join(process.cwd(), "temp_cookies.txt");
     try {
       fs.writeFileSync(tempCookies, process.env.YOUTUBE_COOKIES);
       return tempCookies;
@@ -26,308 +22,296 @@ const setupEnvironmentCookies = () => {
       console.error("Failed to write env cookies:", e);
     }
   }
-  return '';
+  return "";
 };
-
 const ENV_COOKIE_PATH = setupEnvironmentCookies();
 
-// Build universal options for yt-dlp to bypass bot detection
+// ─── yt-dlp options ──────────────────────────────────────────────────────────
 const getDlOpts = () => {
-  const opts: any = {
+  const opts: Record<string, unknown> = {
     dumpJson: true,
     noWarnings: true,
     noCheckCertificates: true,
     preferFreeFormats: true,
-    referer: 'https://www.youtube.com/',
-    // ADVANCED BYPASS: Impersonate Chrome TLS & Android Player Client
-    // This is the most effective way to bypass "bot detection" on Render/Vercel
-    impersonate: 'chrome',
-    extractorArgs: 'youtube:player-client=android,web;player-skip=web_embedded_player,web',
+    referer: "https://www.youtube.com/",
+    // Impersonate Chrome + use Android client to bypass bot-detection
+    impersonate: "chrome",
+    extractorArgs: "youtube:player_client=android,web",
     noPlaylist: true,
     noPart: true,
     noCacheDir: true,
-    bufferSize: '16K',
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+    bufferSize: "16K",
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
   };
 
-  // Support for cookies (Essential for server environments)
-  const COOKIE_NAMES = ['cookies.txt', 'www.youtube.com_cookies.txt'];
-  let cookiePath = ENV_COOKIE_PATH;
-  
-  for (const name of COOKIE_NAMES) {
-    const fullPath = path.join(process.cwd(), name);
-    if (fs.existsSync(fullPath)) {
-      cookiePath = fullPath;
+  // Cookie lookup: env-written file > local files
+  const cookieCandidates = [
+    ENV_COOKIE_PATH,
+    path.join(process.cwd(), "cookies.txt"),
+    path.join(process.cwd(), "www.youtube.com_cookies.txt"),
+  ];
+  for (const p of cookieCandidates) {
+    if (p && fs.existsSync(p)) {
+      opts.cookies = p;
       break;
     }
-  }
-
-  if (cookiePath) {
-    opts.cookies = cookiePath;
   }
 
   return opts;
 };
 
+// ─── In-memory cache ─────────────────────────────────────────────────────────
+interface CacheEntry { data: unknown; expiry: number }
+const infoCache = new Map<string, CacheEntry>();
+const CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+// ─── URL allow-list ───────────────────────────────────────────────────────────
+const ALLOWED_HOSTS = ["youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com"];
+
+const isAllowedUrl = (raw: string): boolean => {
+  try {
+    const u = new URL(raw);
+    return (
+      (u.protocol === "https:" || u.protocol === "http:") &&
+      ALLOWED_HOSTS.some((h) => u.hostname === h)
+    );
+  } catch {
+    return false;
+  }
+};
+
+// ─── Video ID extractor ──────────────────────────────────────────────────────
+const getVideoId = (url: string): string | null => {
+  const re = /(?:youtube\.com\/(?:[^/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?/\s]{11})/;
+  const m = url.match(re);
+  return m ? m[1] : null;
+};
+
+// ─── Session rate limiter ────────────────────────────────────────────────────
+interface RateLimitEntry { count: number; resetAt: number }
+const sessionLimits = new Map<string, RateLimitEntry>();
+const RATE_WINDOW = 60_000;   // 1 min
+const RATE_MAX    = 20;       // requests per window
+
+const sessionRateLimiter: express.RequestHandler = (req, res, next) => {
+  const key = (req.headers["x-session-id"] as string) || req.ip || "anon";
+  const now = Date.now();
+  let entry = sessionLimits.get(key);
+  if (!entry || now > entry.resetAt) {
+    entry = { count: 0, resetAt: now + RATE_WINDOW };
+  }
+  entry.count++;
+  sessionLimits.set(key, entry);
+  if (entry.count > RATE_MAX) {
+    res.status(429).json({ error: "Too many requests. Please wait a moment." });
+    return;
+  }
+  next();
+};
+
+// Cleanup stale rate-limit entries every minute
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of sessionLimits) {
+    if (now > v.resetAt) sessionLimits.delete(k);
+  }
+}, RATE_WINDOW);
+
+// ─── Main server ──────────────────────────────────────────────────────────────
 async function startServer() {
   const app = express();
-  const PORT = parseInt(process.env.PORT || '3000');
+  const PORT = parseInt(process.env.PORT || "3000");
 
-  app.use(cors());
+  // ── CORS ──────────────────────────────────────────────────────────────────
+  const allowedOrigins = [
+    process.env.FRONTEND_URL,
+    "http://localhost:5173",
+    "http://localhost:3000",
+  ].filter(Boolean) as string[];
+
+  app.use(
+    cors({
+      origin: (origin, cb) => {
+        if (!origin) return cb(null, true); // same-origin / curl / Postman
+        if (allowedOrigins.length === 0 || allowedOrigins.includes(origin))
+          return cb(null, true);
+        cb(new Error(`CORS blocked: ${origin}`));
+      },
+      credentials: true,
+    })
+  );
   app.use(express.json());
 
-  // Helper to extract video ID from URL
-  const getVideoId = (url: string) => {
-    const regExp = /^.*((youtu.be\/)|(v\/)|(\/u\/\w\/)|(embed\/)|(watch\?))\??v?=?([^#&?]*).*/;
-    const match = url.match(regExp);
-    return (match && match[7].length === 11) ? match[7] : null;
-  };
+  // ── Health check ──────────────────────────────────────────────────────────
+  app.get("/api/health", (_req, res) => {
+    res.json({ status: "ok", ts: Date.now() });
+  });
 
-  // Session-based Rate Limiting
-  const sessionLimits = new Map<string, { count: number, resetAt: number }>();
-  const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute window
-  const MAX_REQUESTS_PER_WINDOW = 15; // 15 requests per minute per session
-
-  const sessionRateLimiter = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const sessionId = req.headers['x-session-id'] as string || req.ip || 'anonymous';
-    const now = Date.now();
-
-    let limitData = sessionLimits.get(sessionId);
-
-    // If no limit data or the window has expired, reset
-    if (!limitData || now > limitData.resetAt) {
-      limitData = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
-    }
-
-    limitData.count++;
-    sessionLimits.set(sessionId, limitData);
-
-    if (limitData.count > MAX_REQUESTS_PER_WINDOW) {
-      return res.status(429).json({ error: "Too many requests from this session. Please try again in a minute." });
-    }
-
-    next();
-  };
-
-  // Clean up old sessions periodically to prevent memory leaks
-  setInterval(() => {
-    const now = Date.now();
-    for (const [sessionId, limitData] of sessionLimits.entries()) {
-      if (now > limitData.resetAt) {
-        sessionLimits.delete(sessionId);
-      }
-    }
-  }, RATE_LIMIT_WINDOW_MS);
-
-  // API Routes
+  // ── /api/info ─────────────────────────────────────────────────────────────
   app.get("/api/info", sessionRateLimiter, async (req, res) => {
     const videoUrl = req.query.url as string;
+
     if (!videoUrl) {
-      return res.status(400).json({ error: "URL is required" });
+      res.status(400).json({ error: "URL is required." });
+      return;
+    }
+    if (!isAllowedUrl(videoUrl)) {
+      res.status(400).json({ error: "Only YouTube URLs are supported." });
+      return;
     }
 
-    // Check cache first
+    // Cache hit
     const cached = infoCache.get(videoUrl);
     if (cached && cached.expiry > Date.now()) {
-      return res.json(cached.data);
+      res.json(cached.data);
+      return;
     }
 
     const videoId = getVideoId(videoUrl);
 
-    // Try YouTube Data API v3 if key is available
+    // Try YouTube Data API v3 first (fast, reliable)
     if (YOUTUBE_API_KEY && videoId) {
       try {
-        const response = await axios.get(`https://www.googleapis.com/youtube/v3/videos`, {
-          params: {
-            part: 'snippet,contentDetails',
-            id: videoId,
-            key: YOUTUBE_API_KEY
-          }
-        });
-
-        if (response.data.items && response.data.items.length > 0) {
-          const item = response.data.items[0];
-          const snippet = item.snippet;
-          const contentDetails = item.contentDetails;
-
-          // Convert ISO 8601 duration to seconds
-          const durationMatch = contentDetails.duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-          const hours = parseInt(durationMatch[1] || '0');
-          const minutes = parseInt(durationMatch[2] || '0');
-          const seconds = parseInt(durationMatch[3] || '0');
-          const durationSeconds = (hours * 3600) + (minutes * 60) + seconds;
+        const { data } = await axios.get(
+          "https://www.googleapis.com/youtube/v3/videos",
+          { params: { part: "snippet,contentDetails", id: videoId, key: YOUTUBE_API_KEY }, timeout: 5000 }
+        );
+        if (data.items?.length > 0) {
+          const { snippet, contentDetails } = data.items[0];
+          const durMatch = contentDetails.duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+          const duration =
+            (parseInt(durMatch?.[1] || "0") * 3600) +
+            (parseInt(durMatch?.[2] || "0") * 60) +
+            parseInt(durMatch?.[3] || "0");
 
           const responseData = {
             title: snippet.title,
-            thumbnail: snippet.thumbnails.maxres?.url || snippet.thumbnails.high?.url || snippet.thumbnails.default?.url,
-            duration: durationSeconds.toString(),
+            thumbnail:
+              snippet.thumbnails.maxres?.url ||
+              snippet.thumbnails.high?.url ||
+              snippet.thumbnails.default?.url,
+            duration: duration.toString(),
             author: snippet.channelTitle,
-            url: videoUrl
+            url: videoUrl,
           };
-
-          infoCache.set(videoUrl, {
-            data: responseData,
-            expiry: Date.now() + CACHE_DURATION
-          });
-
-          return res.json(responseData);
+          infoCache.set(videoUrl, { data: responseData, expiry: Date.now() + CACHE_TTL });
+          res.json(responseData);
+          return;
         }
-      } catch (apiError) {
-        console.warn("YouTube API failed, falling back to scraper:", apiError);
+      } catch (e) {
+        console.warn("YouTube API failed, falling back to yt-dlp:", (e as Error).message);
       }
     }
 
-    // Fallback to youtube-dl-exec scraper
-    let retries = 2;
-    let lastError: any = null;
-
-    while (retries > 0) {
+    // Fallback: yt-dlp scrape with 2 retries
+    for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const info = await youtubedl(videoUrl, getDlOpts()) as any;
-        
+        const info = await youtubedl(videoUrl, getDlOpts()) as Record<string, unknown>;
         const responseData = {
           title: info.title,
           thumbnail: info.thumbnail,
-          duration: info.duration.toString(),
-          author: info.uploader,
-          url: videoUrl
+          duration: String(info.duration),
+          author: info.uploader || info.channel,
+          url: videoUrl,
         };
-
-        infoCache.set(videoUrl, {
-          data: responseData,
-          expiry: Date.now() + CACHE_DURATION
-        });
-
-        return res.json(responseData);
-      } catch (error: any) {
-        lastError = error;
-        console.warn(`youtube-dl-exec failed. Retries left: ${retries - 1}`);
-        retries--;
-        if (retries > 0) {
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          continue;
-        }
-        break;
+        infoCache.set(videoUrl, { data: responseData, expiry: Date.now() + CACHE_TTL });
+        res.json(responseData);
+        return;
+      } catch (err) {
+        console.warn(`yt-dlp attempt ${attempt} failed:`, (err as Error).message);
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
       }
     }
 
-    console.error("Error fetching info:", lastError);
-    const message = lastError?.message || "Failed to fetch video info";
-    
-    res.status(500).json({ error: message });
+    res.status(500).json({ error: "Could not fetch video info. The video may be private, age-restricted, or unavailable." });
   });
 
-  // Download endpoint - streams media directly
+  // ── /api/download ─────────────────────────────────────────────────────────
   app.get("/api/download", sessionRateLimiter, async (req, res) => {
-    const videoUrl = req.query.url as string;
-    const quality = req.query.quality as string || "highestaudio";
-    const mediaType = req.query.type as string || "audio";
-    
-    if (!videoUrl) {
-      return res.status(400).send("URL is required");
+    const videoUrl = req.query.url     as string;
+    const quality  = req.query.quality as string || "highestaudio";
+    const type     = req.query.type    as string || "audio";
+
+    if (!videoUrl) { res.status(400).send("URL is required."); return; }
+    if (!isAllowedUrl(videoUrl)) { res.status(400).send("Only YouTube URLs are supported."); return; }
+
+    const isVideo = type === "video";
+
+    // ── Format string ────────────────────────────────────────────────────────
+    let formatStr: string;
+    if (!isVideo) {
+      if (quality === "low")    formatStr = "worstaudio[ext=m4a]/worstaudio/worst";
+      else if (quality === "medium") formatStr = "bestaudio[ext=m4a][abr<=192]/bestaudio[abr<=192]/bestaudio[ext=m4a]/bestaudio";
+      else                      formatStr = "bestaudio[ext=m4a]/bestaudio/best";
+    } else {
+      if (quality === "1080p")  formatStr = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[ext=mp4]/best";
+      else if (quality === "360p") formatStr = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[ext=mp4][height<=360]/best";
+      else                      formatStr = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[ext=mp4]/best";
     }
 
-    try {
-      // Get info first to set headers
-      const info = await youtubedl(videoUrl, getDlOpts()) as any;
-
-      // Sanitize title for filename
-      const title = info.title
-        .replace(/[^\x00-\x7F]/g, "") // Remove non-ASCII
-        .replace(/[\/\\?%*:|"><]/g, "_") // Remove invalid filename chars
-        .trim() || "download";
-      
-      const isVideo = mediaType === "video";
-      const fileExt = isVideo ? "mp4" : "m4a";
-      const mimeType = isVideo ? "video/mp4" : "audio/mp4";
-      
-      res.setHeader("Content-Disposition", `attachment; filename="${title}.${fileExt}"`);
-      res.setHeader("Content-Type", mimeType);
-      
-      // Build a robust format string with multiple fallback chains
-      let formatStr: string;
-      
-      if (!isVideo) {
-        // Audio: try m4a first, then any audio, then best overall
-        if (quality === 'low') {
-          formatStr = 'worstaudio[ext=m4a]/worstaudio/worst';
-        } else if (quality === 'medium') {
-          formatStr = 'bestaudio[ext=m4a][abr<=192]/bestaudio[abr<=192]/bestaudio[ext=m4a]/bestaudio';
-        } else {
-          formatStr = 'bestaudio[ext=m4a]/bestaudio/best';
-        }
-      } else {
-        // Video: try mp4 container first with audio, then fallback to best available
-        if (quality === '1080p') {
-          formatStr = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[ext=mp4]/best';
-        } else if (quality === '360p') {
-          formatStr = 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[ext=mp4][height<=360]/best';
-        } else {
-          // Default 720p
-          formatStr = 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[ext=mp4]/best';
-        }
-      }
-      
-      const subprocess = youtubedl.exec(videoUrl, {
-        ...getDlOpts(),
-        format: formatStr,
-        output: '-',
-        dumpJson: false // Don't dump json for the actual stream
-      });
-
-      // Handle errors on the subprocess streams
-      subprocess.stdout.on("error", (err) => {
-        console.error("stdout stream error:", err);
-        if (!res.headersSent) {
-          res.status(500).send("Stream error occurred");
-        }
-      });
-
-      let stderrOutput = "";
-      subprocess.stderr.on("data", (data: Buffer) => {
-        const msg = data.toString();
-        stderrOutput += msg;
-        // yt-dlp prints progress to stderr - only log actual errors
-        if (msg.includes('ERROR')) {
-          console.error("yt-dlp error:", msg);
-        }
-      });
-
-      subprocess.on("error", (err) => {
-        console.error("Subprocess error:", err);
-        if (!res.headersSent) {
-          res.status(500).send(`Process error: ${err.message}`);
-        }
-      });
-
-      subprocess.on("close", (code) => {
-        if (code !== 0 && !res.headersSent) {
-          console.error(`yt-dlp exited with code ${code}. Error: ${stderrOutput}`);
-          res.status(500).json({ 
-            error: "Download process failed", 
-            details: stderrOutput.split('\n').filter(l => l.includes('ERROR')).join(' ') || "No error message provided"
-          });
-        }
-      });
-
-      // Pipe the output to the response
-      subprocess.stdout.pipe(res);
-
-    } catch (error: any) {
-      console.error("Download error:", error);
-      if (!res.headersSent) {
-        res.status(500).send(error.message || "Failed to download");
-      }
+    // ── Get title for filename (use cache if available) ───────────────────
+    let title = "download";
+    const cached = infoCache.get(videoUrl);
+    if (cached) {
+      title = (cached.data as Record<string, string>).title || title;
+    } else {
+      try {
+        const info = await youtubedl(videoUrl, getDlOpts()) as Record<string, unknown>;
+        title = (info.title as string) || title;
+      } catch { /* use default */ }
     }
+
+    const safeTitle = title
+      .replace(/[^\x00-\x7F]/g, "")
+      .replace(/[/\\?%*:|"<>]/g, "_")
+      .trim() || "download";
+
+    const ext      = isVideo ? "mp4"      : "m4a";
+    const mimeType = isVideo ? "video/mp4" : "audio/mp4";
+
+    res.setHeader("Content-Disposition", `attachment; filename="${safeTitle}.${ext}"`);
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+
+    // ── Stream yt-dlp output directly to response ─────────────────────────
+    const subprocess = youtubedl.exec(videoUrl, {
+      ...getDlOpts(),
+      format: formatStr,
+      output: "-",
+      dumpJson: false,
+      // Speed optimisations
+      concurrentFragments: 4,
+      noResizeBuffer: true,
+    } as any);
+
+    subprocess.stdout?.pipe(res);
+
+    subprocess.stderr?.on("data", (data: Buffer) => {
+      const msg = data.toString();
+      if (msg.includes("ERROR")) console.error("yt-dlp:", msg.trim());
+    });
+
+    subprocess.on("error", (err: Error) => {
+      console.error("Subprocess error:", err.message);
+      if (!res.headersSent) res.status(500).send("Stream error.");
+    });
+
+    subprocess.on("close", (code: number) => {
+      if (code !== 0 && !res.headersSent) {
+        res.status(500).json({ error: "Download failed. Video may be unavailable." });
+      }
+    });
+
+    // If client disconnects, kill the subprocess
+    req.on("close", () => subprocess.kill?.());
   });
 
-  // Production-only static asset serving (only if backend is serving Frontend)
+  // ── Static / Vite middleware ───────────────────────────────────────────────
   if (process.env.NODE_ENV === "production" && !process.env.API_ONLY) {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
+    app.get("*", (_req, res) => res.sendFile(path.join(distPath, "index.html")));
   } else if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -337,8 +321,8 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`🚀 EchoTube Server Running on Port: ${PORT}`);
+    console.log(`🚀 EchoTube running on port ${PORT}`);
   });
 }
 
-startServer();
+startServer().catch(console.error);
