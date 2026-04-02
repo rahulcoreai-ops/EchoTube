@@ -96,7 +96,6 @@ const getDlOpts = () => {
   const cookieCandidates = [
     ENV_COOKIE_PATH,
     path.join(process.cwd(), "cookies.txt"),
-    path.join(process.cwd(), "www.youtube.com_cookies.txt"),
   ];
   for (const p of cookieCandidates) {
     if (p && fs.existsSync(p)) {
