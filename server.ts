@@ -2,7 +2,7 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import cors from "cors";
-import youtubedl from "youtube-dl-exec";
+import youtubeDlExec from "youtube-dl-exec";
 import axios from "axios";
 import dotenv from "dotenv";
 import fs from "fs";
@@ -64,6 +64,10 @@ const resolveYtDlpBinary = (): string => {
 };
 const YTDLP_BINARY = resolveYtDlpBinary();
 
+// Create a youtube-dl-exec instance bound to the resolved binary
+// This is the v3.x API — passing `binaryPath` in flags does NOT work.
+const youtubedl = youtubeDlExec.create(YTDLP_BINARY);
+
 // ─── yt-dlp options ──────────────────────────────────────────────────────────
 const getDlOpts = () => {
   const opts: Record<string, unknown> = {
@@ -86,8 +90,7 @@ const getDlOpts = () => {
     ],
   };
 
-  // Always use the resolved binary path (never fall back to bundled)
-  opts.binaryPath = YTDLP_BINARY;
+  // Binary path is set via youtubedl.create() — no need to set it here
 
   // Cookie lookup: env-written file > local files
   const cookieCandidates = [
