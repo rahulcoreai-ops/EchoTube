@@ -6,7 +6,7 @@ import youtubeDlExec from "youtube-dl-exec";
 import axios from "axios";
 import dotenv from "dotenv";
 import fs from "fs";
-import { execSync } from "child_process";
+import { execSync, spawn } from "child_process";
 
 dotenv.config();
 
@@ -330,44 +330,54 @@ async function startServer() {
     const ext      = isVideo ? "mp4"       : "m4a";
     const mimeType = isVideo ? "video/mp4" : "audio/mp4";
 
-    // ── Build download options ────────────────────────────────────────────
-    const dlOpts = getDlOpts();
-    delete dlOpts.dumpJson; // Must NOT dump JSON during actual download
+    // ── Build yt-dlp CLI args directly ────────────────────────────────────
+    const cliArgs: string[] = [
+      videoUrl,
+      "--format", formatStr,
+      "--output", "-",
+      "--no-warnings",
+      "--no-check-certificates",
+      "--prefer-free-formats",
+      "--referer", "https://www.youtube.com/",
+      "--no-playlist",
+      "--no-part",
+      "--no-cache-dir",
+      "--buffer-size", "16K",
+      "--extractor-args", "youtube:player_client=web_creator,mweb",
+      "--add-header", "User-Agent:Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+    ];
 
-    const spawnOpts = {
-      ...dlOpts,
-      format: formatStr,
-      output: "-",            // stream to stdout
-      // NOTE: Do NOT use concurrentFragments with stdout streaming —
-      // concurrent downloads produce interleaved/corrupt output when piped.
-    } as any;
+    // Add cookies if available
+    const cookieCandidates = [
+      ENV_COOKIE_PATH,
+      path.join(process.cwd(), "cookies.txt"),
+    ];
+    for (const p of cookieCandidates) {
+      if (p && fs.existsSync(p)) {
+        cliArgs.push("--cookies", p);
+        break;
+      }
+    }
 
-    console.log(`[download] Starting: ${videoUrl} | format: ${formatStr}`);
+    console.log(`[download] Starting: ${YTDLP_BINARY} ${videoUrl} | format: ${formatStr}`);
 
-    // ── FIX: Use a two-phase approach ─────────────────────────────────────
-    // Phase 1: Spawn the process and wait briefly to detect immediate failures
-    // before committing headers. This prevents the "headers sent but 500"
-    // race condition that was causing the download to fail silently.
+    // ── Spawn yt-dlp directly ────────────────────────────────────────────
     let headersSentFlag = false;
 
-    const subprocess = youtubedl.exec(videoUrl, spawnOpts);
+    const subprocess = spawn(YTDLP_BINARY, cliArgs, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
     // Capture early stderr to detect errors before piping
     const stderrChunks: string[] = [];
     let processExitedEarly = false;
-    let exitCode: number | null = null;
 
-    subprocess.stderr?.on("data", (data: Buffer) => {
+    subprocess.stderr.on("data", (data: Buffer) => {
       const msg = data.toString();
       stderrChunks.push(msg);
       if (msg.includes("ERROR") || msg.includes("error")) {
         console.error("[yt-dlp stderr]", msg.trim());
       }
-    });
-
-    // Prevent unhandled promise rejection
-    subprocess.catch((err: any) => {
-      console.warn("[yt-dlp] Process promise rejected:", err?.message ?? err);
     });
 
     // Set a short detection window: if yt-dlp errors out in the first
@@ -383,14 +393,11 @@ async function startServer() {
         res.setHeader("Content-Type", mimeType);
         res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
         headersSentFlag = true;
-        subprocess.stdout?.pipe(res);
+        subprocess.stdout.pipe(res);
 
         subprocess.on("close", (code: number) => {
-          exitCode = code;
           if (code !== 0) {
             console.error(`[yt-dlp] Exited with code ${code} after streaming started`);
-            // Can no longer send a clean error — stream is already open
-            // Best we can do is destroy the response to signal failure
             if (!res.writableEnded) res.destroy();
           } else {
             console.log("[yt-dlp] Download complete");
@@ -402,9 +409,7 @@ async function startServer() {
 
     // Watch for early process exit (within the detection window)
     subprocess.on("close", (code: number) => {
-      exitCode = code;
       if (!earlyDetected) {
-        // Closed before our detection window elapsed → early failure
         clearTimeout(earlyFailTimer);
         processExitedEarly = true;
         const errSummary = stderrChunks.join("").slice(0, 500);
