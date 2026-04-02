@@ -6,6 +6,7 @@ import youtubedl from "youtube-dl-exec";
 import axios from "axios";
 import dotenv from "dotenv";
 import fs from "fs";
+import { execSync } from "child_process";
 
 dotenv.config();
 
@@ -27,12 +28,27 @@ const setupEnvironmentCookies = (): string => {
 const ENV_COOKIE_PATH = setupEnvironmentCookies();
 
 // ─── yt-dlp binary resolver ───────────────────────────────────────────────────
-// Prefer system yt-dlp (more up-to-date on Render/Nixpacks) over the bundled one
-const resolveYtDlpBinary = (): string | undefined => {
+// Dynamically find yt-dlp: try `which` first (covers pip, nixpacks, any PATH),
+// then fall back to well-known locations, then env var override.
+const resolveYtDlpBinary = (): string => {
+  // 1. Try to locate via PATH (most reliable)
+  try {
+    const whichResult = execSync("which yt-dlp", { encoding: "utf-8" }).trim();
+    if (whichResult && fs.existsSync(whichResult)) {
+      console.log(`[yt-dlp] Found via PATH: ${whichResult}`);
+      return whichResult;
+    }
+  } catch {
+    // `which` failed — not on PATH, try hardcoded candidates
+  }
+
+  // 2. Hardcoded candidate paths
   const candidates = [
-    "/usr/local/bin/yt-dlp",   // Dockerfile installs here
-    "/usr/bin/yt-dlp",         // nixpacks / system apt
-    process.env.YTDLP_PATH,    // user override via env var
+    process.env.YTDLP_PATH,        // user override via env var
+    "/usr/local/bin/yt-dlp",        // pip3 install on Debian/Ubuntu
+    "/usr/bin/yt-dlp",              // system apt / nixpacks
+    "/root/.local/bin/yt-dlp",      // pip install --user
+    "/home/node/.local/bin/yt-dlp", // pip install --user as node user
   ];
   for (const p of candidates) {
     if (p && fs.existsSync(p)) {
@@ -40,9 +56,11 @@ const resolveYtDlpBinary = (): string | undefined => {
       return p;
     }
   }
-  // Fall back to whatever youtube-dl-exec resolves (bundled downloader)
-  console.log("[yt-dlp] No system binary found — using youtube-dl-exec default");
-  return undefined;
+
+  // 3. Last resort — yt-dlp is essential, log a fatal warning
+  console.error("[yt-dlp] FATAL: No yt-dlp binary found anywhere! Downloads will fail.");
+  console.error("[yt-dlp] Checked PATH + candidates:", candidates.filter(Boolean));
+  return "yt-dlp"; // hope it's on PATH at runtime even if `which` failed at startup
 };
 const YTDLP_BINARY = resolveYtDlpBinary();
 
@@ -68,10 +86,8 @@ const getDlOpts = () => {
     ],
   };
 
-  // Override binary path if a system yt-dlp was found
-  if (YTDLP_BINARY) {
-    opts.binaryPath = YTDLP_BINARY;
-  }
+  // Always use the resolved binary path (never fall back to bundled)
+  opts.binaryPath = YTDLP_BINARY;
 
   // Cookie lookup: env-written file > local files
   const cookieCandidates = [
